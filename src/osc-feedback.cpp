@@ -4,7 +4,6 @@
 #include "osc-server.h"
 #include "osc-subscribe.h"
 #include "osc-util.h"
-#include "osc-util.h"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -23,6 +22,13 @@ void osc_feedback_send(const char *address, std::initializer_list<osc_argument> 
 	if (!g_config.feedback_enabled)
 		return;
 
+	/* Encoding allocates; skip it entirely when no receiver could
+	 * possibly exist. Subscriber state is an atomic load, so this
+	 * gate is cheap even at signal-storm rates. */
+	const bool have_subscribers = osc_has_subscribers();
+	if (!have_subscribers && !g_server.has_fixed_target() && !g_server.has_last_sender())
+		return;
+
 	std::vector<uint8_t> buf;
 	osc_build_message(&buf, address, args);
 
@@ -34,8 +40,9 @@ void osc_feedback_send(const char *address, std::initializer_list<osc_argument> 
 	 * event; the implicit reply-to-last-controller broadcast stays
 	 * only while nobody subscribes selectively, which would defeat
 	 * per-topic filtering. */
-	g_server.send_fixed(buf.data(), buf.size());
-	if (!osc_has_subscribers())
+	if (g_server.has_fixed_target())
+		g_server.send_fixed(buf.data(), buf.size());
+	if (!have_subscribers && g_server.has_last_sender())
 		g_server.send_last(buf.data(), buf.size());
 }
 
@@ -72,8 +79,23 @@ static bool throttled(const std::string &key, long ms)
 	static std::mutex mutex;
 	static std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_sent;
 
+	/* Sources (and their names) come and go; without pruning the map
+	 * grows with every name ever seen for the whole session. */
+	constexpr size_t prune_at = 256;
+	constexpr auto stale_after = std::chrono::seconds(5);
+
 	std::lock_guard<std::mutex> lock(mutex);
 	const auto now = std::chrono::steady_clock::now();
+
+	if (last_sent.size() >= prune_at) {
+		for (auto it = last_sent.begin(); it != last_sent.end();) {
+			if (now - it->second > stale_after)
+				it = last_sent.erase(it);
+			else
+				++it;
+		}
+	}
+
 	const auto it = last_sent.find(key);
 
 	if (it != last_sent.end() && now - it->second < std::chrono::milliseconds(ms))

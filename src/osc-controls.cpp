@@ -342,9 +342,13 @@ static void poll_media_state(const char *name, const osc_net::osc_endpoint &to)
 }
 
 /* Answers a read request for a known route. Returns false for unknown
- * or write-only addresses so they keep reaching the dispatcher. */
+ * or write-only addresses so they keep reaching the dispatcher.
+ * Replies are coalesced into one #bundle datagram: polls of bare
+ * routes answer dozens of addresses, and clients get an atomic
+ * snapshot instead of a stream of datagrams. */
 static bool poll_dispatch(const std::string &a, const osc_net::osc_endpoint &to)
 {
+	osc_reply_batch batch(to);
 	if (a == osc_addr::studio) {
 		g_server.reply(to, osc_addr::studio, {osc_int(obs_frontend_preview_program_mode_active())});
 		return true;

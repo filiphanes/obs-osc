@@ -8,6 +8,7 @@
 #include <obs-module.h>
 #include <util/platform.h>
 
+#include <utility>
 #include <vector>
 
 osc_config g_config;
@@ -16,17 +17,23 @@ osc_server g_server;
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-osc", "en-US")
 
-/* Runs on the network thread: parse the datagram, then hand each
- * message over to the UI thread together with the sender's endpoint,
- * so polls can be answered on the socket they arrived from. */
+/* Runs on the network thread: parse the datagram, then hand ALL of its
+ * messages to the UI thread as one task. Bundles stay ordered together
+ * and bursty controllers cost one queue hop instead of one per message;
+ * the closure moves the messages in, so only one heap task remains.
+ * The sender's endpoint rides along so polls can be answered on the
+ * socket they arrived from. */
 static void handle_datagram(const uint8_t *data, size_t size, const osc_net::osc_endpoint &sender)
 {
 	std::vector<osc_message> msgs;
 	if (!osc_parse_packet(data, size, &msgs))
 		return;
 
-	for (osc_message &msg : msgs)
-		osc_ui_post([msg, sender] { osc_dispatch_command(msg, sender); });
+	osc_ui_post(
+		[msgs = std::move(msgs), sender] {
+			for (const osc_message &msg : msgs)
+				osc_dispatch_command(msg, sender);
+		});
 }
 
 static void load_config(void)
@@ -151,10 +158,13 @@ bool obs_module_load(void)
 	/* Hooks are always installed; osc_feedback_send() gates on this flag. */
 	osc_feedback_init();
 
-	g_server.set_feedback_target(g_config.feedback_host, g_config.feedback_port);
-
 	if (!g_server.start(g_config.port, handle_datagram))
 		blog(LOG_ERROR, "[obs-osc] OSC server not started, remote control unavailable");
+
+	/* After start(): socket setup must exist before the feedback host
+	 * can resolve (Winsock on Windows). The target also outlives later
+	 * listener restarts, so ordering here is the only requirement. */
+	g_server.set_feedback_target(g_config.feedback_host, g_config.feedback_port);
 
 	const char *menu_name = "OSC Settings...";
 	obs_module_get_string("Settings", &menu_name);
@@ -171,4 +181,22 @@ void obs_module_unload(void)
 	g_server.stop();
 	osc_feedback_shutdown();
 	osc_save_config();
+}
+
+/* ------------------------------------------------------------------ */
+/* Scoped poll-reply batching                                          */
+/* ------------------------------------------------------------------ */
+
+/* Defined here because g_server lives here; osc-server.h only declares
+ * the class so it stays free of module state. */
+osc_reply_batch::osc_reply_batch(const osc_net::osc_endpoint &to)
+{
+	g_server.begin_batch(to);
+	active_ = true;
+}
+
+osc_reply_batch::~osc_reply_batch(void)
+{
+	if (active_)
+		g_server.end_batch();
 }

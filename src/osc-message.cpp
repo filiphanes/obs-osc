@@ -151,6 +151,10 @@ void osc_build_message(std::vector<uint8_t> *buf, const char *address,
 	for (const osc_argument &a : args)
 		tags += a.type ? a.type : 's';
 
+	/* Size hint covers the fixed-size part; strings and blobs still
+	 * grow the vector, ints and floats never do. */
+	buf->reserve(buf->size() + strlen(address) + 4 + tags.size() + 4 + args.size() * 4);
+
 	write_padded_string(buf, address);
 	write_padded_string(buf, tags.c_str());
 

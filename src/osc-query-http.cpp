@@ -18,6 +18,12 @@ static osc_http_handler http_handler;
 static osc_net::socket_t listen_fd = osc_net::invalid_socket;
 static std::thread accept_thread;
 
+/* Bounds the number of concurrently served connections: each one is
+ * a detached thread, and an unbounded flood must not exhaust threads
+ * or memory. Extra connections are closed immediately. */
+static std::atomic<int> live_clients{0};
+constexpr int max_clients = 32;
+
 static std::string url_decode(const std::string &in)
 {
 	std::string out;
@@ -167,7 +173,20 @@ static void accept_loop(osc_net::socket_t fd)
 
 		osc_net::set_recv_timeout(client, 2000);
 
-		std::thread(handle_client, client).detach();
+		if (live_clients.fetch_add(1, std::memory_order_relaxed) >= max_clients) {
+			live_clients.fetch_sub(1, std::memory_order_relaxed);
+			osc_net::close_socket(client);
+			continue;
+		}
+
+		std::thread(
+			[client] {
+				handle_client(client);
+				/* Counted here, not in handle_client(): the websocket
+				 * upgrade path returns early from it. */
+				live_clients.fetch_sub(1, std::memory_order_relaxed);
+			})
+			.detach();
 	}
 }
 

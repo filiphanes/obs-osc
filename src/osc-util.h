@@ -21,8 +21,13 @@ inline bool osc_is_input(obs_source_t *source)
  * NULL. Release after use. */
 obs_source_t *osc_source_of_type(const char *name, enum obs_source_type type);
 
-/* Shell-style glob with '*' and '?' wildcards. */
+/* Shell-style glob with '*' and '?' wildcards. Iterative, linear
+ * worst-case cost: safe against hostile patterns on hot threads. */
 bool osc_glob_match(const char *pattern, const char *str);
+
+/* True when the pattern needs glob matching at all; exact selectors
+ * take hash-table lookup fast paths instead of full enumerations. */
+bool osc_has_wildcard(const char *pattern);
 
 /* True when the segment addresses an array element by position instead
  * of a name: "2" selects the third filter or scene item, while "Mic"
@@ -38,7 +43,9 @@ bool osc_selector_matches(const char *selector, const char *name, size_t index);
 enum class osc_source_kind { any, input, scene };
 
 /* Calls visit once per non-private source of the given kind whose name
- * matches the glob. Borrowed refs; UI thread only. */
+ * matches the pattern. Exact names resolve through libobs' source hash
+ * table instead of walking every registered source. Borrowed refs;
+ * UI thread only. */
 void osc_visit_sources(const char *pattern, osc_source_kind kind,
 		       bool (*visit)(obs_source_t *source, void *param), void *param);
 

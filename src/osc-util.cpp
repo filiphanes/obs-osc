@@ -19,22 +19,38 @@ obs_source_t *osc_source_of_type(const char *name, enum obs_source_type type)
 	return source;
 }
 
-/* Shell-style glob with '*' and '?' for mute patterns. */
+/* Shell-style glob with '*' and '?' for mute patterns. Iterative
+ * two-pointer form: O(n*m) worst case instead of the recursive form's
+ * exponential backtracking, so attacker-controlled /subscribe patterns
+ * cannot burn signal-thread time. */
 bool osc_glob_match(const char *pattern, const char *str)
 {
-	if (!*pattern)
-		return !*str;
-	if (*pattern == '*') {
-		for (const char *s = str;; s++) {
-			if (osc_glob_match(pattern + 1, s))
-				return true;
-			if (!*s)
-				return false;
+	const char *restart_pattern = nullptr;
+	const char *restart_str = nullptr;
+
+	while (*str) {
+		if (*pattern == '?' || *pattern == *str) {
+			pattern++;
+			str++;
+		} else if (*pattern == '*') {
+			restart_pattern = ++pattern;
+			restart_str = str;
+		} else if (restart_pattern) {
+			pattern = restart_pattern;
+			str = ++restart_str;
+		} else {
+			return false;
 		}
 	}
-	if (*str && (*pattern == '?' || *pattern == *str))
-		return osc_glob_match(pattern + 1, str + 1);
-	return false;
+
+	while (*pattern == '*')
+		pattern++;
+	return !*pattern;
+}
+
+bool osc_has_wildcard(const char *pattern)
+{
+	return pattern && (strchr(pattern, '*') || strchr(pattern, '?'));
 }
 
 bool osc_index_segment(const char *segment)
@@ -64,6 +80,33 @@ void osc_visit_sources(const char *pattern, osc_source_kind kind,
 		void *param;
 	} ctx = {pattern, kind, visit, param};
 
+	/* Exact names hit libobs' source hash table directly instead of
+	 * walking every registered source; hardware controllers address
+	 * sources by name almost exclusively. */
+	if (!osc_has_wildcard(pattern)) {
+		obs_source_t *source = obs_get_source_by_name(pattern);
+		if (!source)
+			return;
+
+		bool type_ok;
+		switch (kind) {
+		case osc_source_kind::input:
+			type_ok = osc_is_input(source);
+			break;
+		case osc_source_kind::scene:
+			type_ok = obs_source_get_type(source) == OBS_SOURCE_TYPE_SCENE;
+			break;
+		default:
+			type_ok = true;
+			break;
+		}
+
+		if (type_ok)
+			visit(source, param);
+		obs_source_release(source);
+		return;
+	}
+
 	obs_enum_sources(
 		[](void *p, obs_source_t *source) {
 			auto *c = (struct visit_ctx *)p;
@@ -88,45 +131,67 @@ void osc_visit_sources(const char *pattern, osc_source_kind kind,
 		&ctx);
 }
 
+/* Per-scene walk state shared by the exact-name and glob paths of
+ * osc_visit_scene_items(). */
+struct scene_ctx {
+	const char *scene_pattern;
+	const char *item_selector;
+	bool (*visit)(const char *, obs_sceneitem_t *, void *);
+	void *param;
+	const char *scene_name; /* bound while walking */
+};
+
+/* Item walk shared by the exact-name and glob paths; scene_name is
+ * bound by the caller. */
+static bool visit_item_cb(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
+{
+	UNUSED_PARAMETER(scene);
+	auto *ic = (struct scene_ctx *)param;
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return true;
+
+	if (ic->item_selector &&
+	    !osc_selector_matches(ic->item_selector, obs_source_get_name(source),
+				  (size_t)obs_sceneitem_get_order_position(item)))
+		return true;
+
+	return ic->visit(ic->scene_name, item, ic->param);
+}
+
+static void enum_items_of_scene(obs_source_t *scene_source, struct scene_ctx *ctx)
+{
+	ctx->scene_name = obs_source_get_name(scene_source);
+	obs_scene_enum_items(obs_scene_from_source(scene_source), visit_item_cb, ctx);
+}
+
 void osc_visit_scene_items(const char *scene_pattern, const char *item_selector,
 			   bool (*visit)(const char *scene_name, obs_sceneitem_t *item, void *param),
 			   void *param)
 {
-	struct scene_ctx {
-		const char *scene_pattern;
-		const char *item_selector;
-		bool (*visit)(const char *, obs_sceneitem_t *, void *);
-		void *param;
-		const char *scene_name; /* bound while walking */
-	} ctx = {scene_pattern, item_selector, visit, param, ""};
+	scene_ctx ctx = {scene_pattern, item_selector, visit, param, nullptr};
+
+	/* One scene's items are walked directly when the scene is named
+	 * exactly; only globs pay for the global scene enumeration. */
+	if (!osc_has_wildcard(scene_pattern)) {
+		obs_source_t *scene_source = obs_get_source_by_name(scene_pattern);
+		if (!scene_source)
+			return;
+
+		if (obs_source_get_type(scene_source) == OBS_SOURCE_TYPE_SCENE)
+			enum_items_of_scene(scene_source, &ctx);
+		obs_source_release(scene_source);
+		return;
+	}
 
 	obs_enum_scenes(
 		[](void *p, obs_source_t *scene_source) {
 			auto *c = (struct scene_ctx *)p;
 
-			const char *name = obs_source_get_name(scene_source);
-			if (!osc_glob_match(c->scene_pattern, name))
+			if (!osc_glob_match(c->scene_pattern, obs_source_get_name(scene_source)))
 				return true;
-			c->scene_name = name;
-
-			obs_scene_enum_items(
-				obs_scene_from_source(scene_source),
-				[](obs_scene_t *scene, obs_sceneitem_t *item, void *ip) {
-					UNUSED_PARAMETER(scene);
-					auto *ic = (struct scene_ctx *)ip;
-
-					obs_source_t *source = obs_sceneitem_get_source(item);
-					if (!source)
-						return true;
-
-					if (ic->item_selector &&
-					    !osc_selector_matches(ic->item_selector, obs_source_get_name(source),
-								  (size_t)obs_sceneitem_get_order_position(item)))
-						return true;
-
-					return ic->visit(ic->scene_name, item, ic->param);
-				},
-				c);
+			enum_items_of_scene(scene_source, c);
 			return true;
 		},
 		&ctx);

@@ -16,6 +16,7 @@
  */
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace osc_net {

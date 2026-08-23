@@ -10,6 +10,7 @@
 #include <obs-module.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -27,6 +28,10 @@ constexpr size_t max_listeners = 256;
 constexpr size_t max_pattern_len = 256;
 
 std::mutex registry_mutex;
+
+/* Lock-free count for hot-path probes (every feedback event asks
+ * "anyone listening?"); mutations publish it under registry_mutex. */
+std::atomic<size_t> subscriber_count{0};
 
 struct subscriber {
 	osc_net::osc_endpoint endpoint;
@@ -135,6 +140,7 @@ void osc_subscribe_add(const osc_net::osc_endpoint &who, const std::string &patt
 		endpoint_set_port(sub.endpoint, port);
 	sub.patterns.push_back(pattern);
 	subscribers().push_back(std::move(sub));
+	subscriber_count.fetch_add(1, std::memory_order_relaxed);
 }
 
 void osc_subscribe_remove(const osc_net::osc_endpoint &who, const char *pattern)
@@ -157,9 +163,10 @@ void osc_subscribe_remove(const osc_net::osc_endpoint &who, const char *pattern)
 			sub->patterns.clear();
 		}
 
-		if (sub->patterns.empty())
+		if (sub->patterns.empty()) {
 			sub = subscribers().erase(sub);
-		else
+			subscriber_count.fetch_sub(1, std::memory_order_relaxed);
+		} else
 			++sub;
 		break; /* endpoints are unique in the registry */
 	}
@@ -167,8 +174,7 @@ void osc_subscribe_remove(const osc_net::osc_endpoint &who, const char *pattern)
 
 bool osc_has_subscribers(void)
 {
-	std::lock_guard<std::mutex> lock(registry_mutex);
-	return !subscribers().empty();
+	return subscriber_count.load(std::memory_order_relaxed) != 0;
 }
 
 /* ---- OSCQuery LISTEN registrations ----------------------------------- */
