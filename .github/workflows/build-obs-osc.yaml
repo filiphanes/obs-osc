@@ -1,0 +1,375 @@
+name: Build obs-osc Plugin
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # obs-studio tag the plugin is built against in CI. Bump when the plugin
+  # adopts APIs from a newer OBS release.
+  OBS_REF: 32.2.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-event:
+    name: Event Data 🔎
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.setup.outputs.version }}
+    steps:
+      - name: Check Event Data ☑️
+        id: setup
+        run: |
+          : Check Event Data ☑️
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          if [[ ${GITHUB_REF_NAME} =~ ^v[0-9]+(\.[0-9]+){0,3}(-.+)?$ ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="ci-$(date -u +%Y%m%d)-g${GITHUB_SHA::9}"
+          fi
+
+          echo "version=${version}" >> $GITHUB_OUTPUT
+
+  macos-build:
+    name: macOS 🍏 (${{ matrix.arch }})
+    runs-on: macos-latest
+    needs: check-event
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: obs-studio/.deps
+          key: macos-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
+
+      # The plugin builds in-tree: fetch the pinned obs-studio source,
+      # overlay the plugin into plugins/obs-osc and register it. Prebuilt
+      # obs-deps / Qt6 archives are downloaded automatically during
+      # configure; browser, scripting and websocket are disabled because
+      # the plugin needs none of them.
+      - name: Fetch obs-studio 📥
+        run: |
+          : Fetch obs-studio 📥
+          git clone --depth 1 --branch "${OBS_REF}" \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/obsproject/obs-studio.git obs-studio
+
+          rsync -a --exclude .git --exclude .github --exclude 'build*' \
+            ./ obs-studio/plugins/obs-osc/
+          echo "add_obs_plugin(obs-osc)" >> obs-studio/plugins/CMakeLists.txt
+
+      - name: Configure ⚙️
+        run: |
+          : Configure ⚙️
+          cmake -S obs-studio --preset macos \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DENABLE_BROWSER=OFF \
+            -DENABLE_SCRIPTING=OFF \
+            -DENABLE_WEBSOCKET=OFF \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
+            -DCODESIGN_IDENT:STRING=-
+
+      - name: Build obs-osc 🧱
+        run: |
+          : Build obs-osc 🧱
+          cmake --build obs-studio/build_macos \
+            --target obs-osc --config RelWithDebInfo --parallel
+
+      - name: Package 📀
+        run: |
+          : Package 📀
+          version='${{ needs.check-event.outputs.version }}'
+
+          mkdir -p package
+          cp -R "obs-studio/build_macos/plugins/obs-osc/RelWithDebInfo/obs-osc.plugin" package/
+          (
+            cd package
+            zip --symlinks -r "../obs-osc-${version}-macos-${{ matrix.arch }}.zip" obs-osc.plugin
+          )
+
+      - name: Upload Artifacts 📡
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkg-macos-${{ matrix.arch }}
+          path: obs-osc-*-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+      - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: github.event_name != 'pull_request'
+        with:
+          path: obs-studio/.deps
+          key: macos-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
+
+  linux-build:
+    name: Linux 🐧 (x86_64)
+    runs-on: ubuntu-24.04
+    needs: check-event
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Dependencies 🛍️
+        run: |
+          : Install Dependencies 🛍️
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential extra-cmake-modules ccache ninja-build pkg-config \
+            libcurl4-openssl-dev \
+            libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev \
+            libavutil-dev libswresample-dev libswscale-dev \
+            libjansson-dev libx11-dev libx11-xcb-dev libgles2-mesa-dev \
+            libwayland-dev libpipewire-0.3-dev libpulse-dev libx264-dev \
+            libmbedtls-dev libgl1-mesa-dev uthash-dev libsimde-dev \
+            libluajit-5.1-dev python3-dev \
+            libxcb-randr0-dev libxcb-shm0-dev libxcb-xinerama0-dev \
+            libxcb-composite0-dev libxinerama-dev libxcb1-dev libxcb-xfixes0-dev \
+            swig libcmocka-dev libxss-dev libglvnd-dev \
+            libxkbcommon-dev libatk1.0-dev libatk-bridge2.0-dev \
+            libxcomposite-dev libxdamage-dev \
+            libasound2-dev libfdk-aac-dev libfontconfig-dev libfreetype6-dev \
+            libjack-jackd2-dev libsndio-dev libspeexdsp-dev libudev-dev \
+            libv4l-dev libva-dev libvlc-dev libpci-dev libdrm-dev \
+            nlohmann-json3-dev libwebsocketpp-dev libasio-dev \
+            libqrcodegencpp-dev libffmpeg-nvenc-dev librist-dev libsrt-openssl-dev \
+            qt6-base-dev libqt6svg6-dev qt6-base-private-dev
+
+      - name: Fetch obs-studio 📥
+        run: |
+          : Fetch obs-studio 📥
+          git clone --depth 1 --branch "${OBS_REF}" \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/obsproject/obs-studio.git obs-studio
+
+          rsync -a --exclude .git --exclude .github --exclude 'build*' \
+            ./ obs-studio/plugins/obs-osc/
+          echo "add_obs_plugin(obs-osc)" >> obs-studio/plugins/CMakeLists.txt
+
+      - name: Configure ⚙️
+        run: |
+          : Configure ⚙️
+          cmake -S obs-studio --preset ubuntu-ci \
+            -DENABLE_BROWSER=OFF \
+            -DENABLE_SCRIPTING=OFF \
+            -DENABLE_WEBSOCKET=OFF \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
+
+      - name: Build obs-osc 🧱
+        run: |
+          : Build obs-osc 🧱
+          cmake --build obs-studio/build_ubuntu \
+            --target obs-osc --parallel "$(nproc)"
+
+      # Assemble the FHS layout by hand instead of running cmake --install,
+      # which would sweep the entire OBS installation into the package.
+      - name: Package 📀
+        run: |
+          : Package 📀
+          set -e
+          version='${{ needs.check-event.outputs.version }}'
+
+          pkg=pkg/usr
+          mkdir -p "${pkg}/lib/obs-plugins" "${pkg}/share/obs/obs-plugins/obs-osc"
+
+          cp -a obs-studio/build_ubuntu/plugins/obs-osc/obs-osc.so \
+            "${pkg}/lib/obs-plugins/"
+          cp -a data/locale "${pkg}/share/obs/obs-plugins/obs-osc/"
+
+          # Portable archive.
+          tar -C pkg -czf "obs-osc-${version}-ubuntu-x86_64.tar.gz" usr
+
+          # Debian package with the same layout plus a control file.
+          mkdir -p pkg/DEBIAN
+          {
+            echo 'Package: obs-osc'
+            echo "Version: ${version}"
+            echo 'Architecture: amd64'
+            echo 'Maintainer: Filip Hanes <filip@hanes.dev>'
+            echo 'Depends: obs-studio'
+            echo 'Section: video'
+            echo 'Priority: optional'
+            echo 'Description: Open Sound Control remote control plugin for OBS Studio'
+            echo ' Switch scenes, control streaming/recording, mix audio and drive media'
+            echo ' sources over OSC, with feedback, polling, topic subscriptions,'
+            echo ' OSCQuery discovery and LISTEN support.'
+          } > pkg/DEBIAN/control
+          dpkg-deb --root-owner-group -Zxz --build pkg \
+            "obs-osc-${version}-ubuntu-x86_64.deb"
+
+      - name: Upload Artifacts 📡
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkg-linux-x86_64
+          path: |
+            obs-osc-*-ubuntu-x86_64.deb
+            obs-osc-*-ubuntu-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows-build:
+    name: Windows 🪟 (${{ matrix.arch }})
+    runs-on: windows-2025
+    needs: check-event
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: obs-studio/.deps
+          key: windows-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
+
+      - name: Fetch obs-studio 📥
+        run: |
+          # Fetch obs-studio 📥
+          git clone --depth 1 --branch $env:OBS_REF `
+            --recurse-submodules --shallow-submodules `
+            https://github.com/obsproject/obs-studio.git obs-studio
+
+          New-Item -ItemType Directory -Path obs-studio/plugins/obs-osc -Force | Out-Null
+          robocopy . obs-studio/plugins/obs-osc /E /XD .git .github /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+          Add-Content -Path obs-studio/plugins/CMakeLists.txt -Value ''
+          Add-Content -Path obs-studio/plugins/CMakeLists.txt -Value 'add_obs_plugin(obs-osc)'
+
+      # The windows-ci presets pin the VS2026 generator used on obsproject
+      # runners; public images ship VS2022, so the generator and platform
+      # are overridden here. Dependencies (obs-deps, Qt6) are downloaded
+      # automatically by cmake/windows/buildspec.cmake.
+      - name: Configure ⚙️
+        run: |
+          # Configure ⚙️
+          $arch = '${{ matrix.arch }}'
+          $platform = if ($arch -eq 'arm64') { 'ARM64' } else { 'x64' }
+
+          cmake -S obs-studio --preset "windows-ci-$arch" `
+            -G 'Visual Studio 17 2022' `
+            -A $platform `
+            -DENABLE_BROWSER=OFF `
+            -DENABLE_SCRIPTING=OFF `
+            -DENABLE_WEBSOCKET=OFF `
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
+
+      - name: Build obs-osc 🧱
+        run: |
+          # Build obs-osc 🧱
+          $arch = '${{ matrix.arch }}'
+          cmake --build "obs-studio/build_$arch" `
+            --config RelWithDebInfo --target obs-osc --parallel
+
+      # Assemble the plugin zip by hand instead of running cmake --install,
+      # which would sweep the entire OBS installation into the package.
+      # Layout matches OBS's install tree, so the zip extracts straight
+      # into an OBS Studio install (or portable mode) folder.
+      - name: Package 📀
+        run: |
+          # Package 📀
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          $version = '${{ needs.check-event.outputs.version }}'
+          $bindir = "obs-studio/build_$arch/plugins/obs-osc/RelWithDebInfo"
+
+          New-Item -ItemType Directory -Force `
+            -Path pkg/obs-plugins/64bit, pkg/data/obs-plugins/obs-osc | Out-Null
+          Copy-Item "$bindir/obs-osc.dll" pkg/obs-plugins/64bit/
+          Copy-Item -Recurse data/locale pkg/data/obs-plugins/obs-osc/locale
+
+          Compress-Archive -Path pkg/* `
+            -DestinationPath "obs-osc-$version-windows-$arch.zip"
+
+          New-Item -ItemType Directory -Path pkg-pdb -Force | Out-Null
+          Copy-Item "$bindir/obs-osc.pdb" pkg-pdb/
+
+      - name: Upload Artifacts 📡
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkg-windows-${{ matrix.arch }}
+          path: obs-osc-*-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+      - name: Upload Debug Symbols 🪲
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pdb-windows-${{ matrix.arch }}
+          path: pkg-pdb/obs-osc.pdb
+          if-no-files-found: error
+
+      - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: github.event_name != 'pull_request'
+        with:
+          path: obs-studio/.deps
+          key: windows-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
+
+  release:
+    name: Release 🚀
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    needs: [check-event, macos-build, linux-build, windows-build]
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: release
+
+      - name: Generate Checksums 🔐
+        working-directory: release
+        run: |
+          : Generate Checksums 🔐
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release 🚀
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check-event.outputs.version }}
+        run: |
+          : Create GitHub Release 🚀
+          {
+            echo "## obs-osc ${VERSION}"
+            echo
+            echo 'Open Sound Control (OSC 1.0) remote control plugin for OBS Studio.'
+            echo
+            echo '### Installation'
+            echo '- **macOS:** unzip and copy `obs-osc.plugin` to `~/Library/Application Support/obs-studio/plugins/`'
+            echo '- **Windows:** unzip into your OBS Studio install folder (or portable-mode folder), merging `obs-plugins/` and `data/`'
+            echo '- **Ubuntu:** `sudo apt install ./obs-osc-*_amd64.deb`, or extract the portable tar.gz at `/`'
+            echo
+            echo "Built against OBS Studio ${OBS_REF}. See SHA256SUMS.txt for checksums."
+          } > release-notes.md
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "obs-osc ${VERSION}" \
+            --notes-file release-notes.md \
+            release/*
