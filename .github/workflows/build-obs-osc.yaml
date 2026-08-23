@@ -197,6 +197,13 @@ jobs:
           set -e
           version='${{ needs.check-event.outputs.version }}'
 
+          # Debian versions must start with a digit; tag builds already do,
+          # so this only affects the generated ci-* versions.
+          case "${version}" in
+            [0-9]*) deb_version="${version}" ;;
+            *) deb_version="0.${version}" ;;
+          esac
+
           pkg=pkg/usr
           mkdir -p "${pkg}/lib/obs-plugins" "${pkg}/share/obs/obs-plugins/obs-osc"
 
@@ -211,7 +218,7 @@ jobs:
           mkdir -p pkg/DEBIAN
           {
             echo 'Package: obs-osc'
-            echo "Version: ${version}"
+            echo "Version: ${deb_version}"
             echo 'Architecture: amd64'
             echo 'Maintainer: Filip Hanes <filip@hanes.dev>'
             echo 'Depends: obs-studio'
@@ -223,7 +230,7 @@ jobs:
             echo ' OSCQuery discovery and LISTEN support.'
           } > pkg/DEBIAN/control
           dpkg-deb --root-owner-group -Zxz --build pkg \
-            "obs-osc-${version}-ubuntu-x86_64.deb"
+            "obs-osc-${deb_version}-ubuntu-x86_64.deb"
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
