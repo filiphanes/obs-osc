@@ -55,11 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: obs-studio/.deps
-          key: macos-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
-
       # The plugin builds in-tree: fetch the pinned obs-studio source,
       # overlay the plugin into plugins/obs-osc and register it. Prebuilt
       # obs-deps / Qt6 archives are downloaded automatically during
@@ -78,6 +73,13 @@ jobs:
             --exclude obs-studio \
             ./ obs-studio/plugins/obs-osc/
           echo "add_obs_plugin(obs-osc)" >> obs-studio/plugins/CMakeLists.txt
+
+      # Restore after the clone: cache extraction creates obs-studio/, so
+      # running it first would block git from cloning into that path.
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: obs-studio/.deps
+          key: macos-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
 
       - name: Configure ⚙️
         run: |
@@ -256,11 +258,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: obs-studio/.deps
-          key: windows-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
-
       - name: Fetch obs-studio 📥
         run: |
           # Fetch obs-studio 📥
@@ -277,18 +274,39 @@ jobs:
           Add-Content -Path obs-studio/plugins/CMakeLists.txt -Value ''
           Add-Content -Path obs-studio/plugins/CMakeLists.txt -Value 'add_obs_plugin(obs-osc)'
 
-      # The windows-ci presets pin the VS2026 generator used on obsproject
-      # runners; public images ship VS2022, so the generator and platform
-      # are overridden here. Dependencies (obs-deps, Qt6) are downloaded
-      # automatically by cmake/windows/buildspec.cmake.
+      # Restore after the clone: cache extraction creates obs-studio/, so
+      # running it first would block git from cloning into that path.
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: obs-studio/.deps
+          key: windows-deps-${{ matrix.arch }}-${{ env.OBS_REF }}
+
+      # The presets pin the VS2026 generator used on obsproject runners,
+      # but hosted images vary over time, so detect whichever Visual Studio
+      # has C++ tools and select the matching generator. Dependencies
+      # (obs-deps, Qt6) are downloaded automatically during configure.
       - name: Configure ⚙️
         run: |
           # Configure ⚙️
+          $ErrorActionPreference = 'Stop'
           $arch = '${{ matrix.arch }}'
           $platform = if ($arch -eq 'arm64') { 'ARM64' } else { 'x64' }
 
+          $vswhere = Join-Path ${Env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installVersion = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationVersion
+          if (-not $installVersion) { throw 'No Visual Studio C++ toolset found' }
+
+          $generator = @{
+            17 = 'Visual Studio 17 2022'
+            18 = 'Visual Studio 18 2026'
+          }[([version]$installVersion).Major]
+          if (-not $generator) { throw "Unsupported Visual Studio version: $installVersion" }
+          Write-Host "::notice::Using generator '$generator' (VS $installVersion)"
+
           cmake -S obs-studio --preset "windows-ci-$arch" `
-            -G 'Visual Studio 17 2022' `
+            -G $generator `
             -A $platform `
             -DENABLE_BROWSER=OFF `
             -DENABLE_SCRIPTING=OFF `
