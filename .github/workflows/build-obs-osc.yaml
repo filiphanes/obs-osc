@@ -72,7 +72,10 @@ jobs:
             --recurse-submodules --shallow-submodules \
             https://github.com/obsproject/obs-studio.git obs-studio
 
+          # Exclude the clone itself, or rsync copies obs-studio into its
+          # own plugins/obs-osc until paths overflow.
           rsync -a --exclude .git --exclude .github --exclude 'build*' \
+            --exclude obs-studio \
             ./ obs-studio/plugins/obs-osc/
           echo "add_obs_plugin(obs-osc)" >> obs-studio/plugins/CMakeLists.txt
 
@@ -161,7 +164,10 @@ jobs:
             --recurse-submodules --shallow-submodules \
             https://github.com/obsproject/obs-studio.git obs-studio
 
+          # Exclude the clone itself, or rsync copies obs-studio into its
+          # own plugins/obs-osc until paths overflow.
           rsync -a --exclude .git --exclude .github --exclude 'build*' \
+            --exclude obs-studio \
             ./ obs-studio/plugins/obs-osc/
           echo "add_obs_plugin(obs-osc)" >> obs-studio/plugins/CMakeLists.txt
 
@@ -253,7 +259,9 @@ jobs:
             https://github.com/obsproject/obs-studio.git obs-studio
 
           New-Item -ItemType Directory -Path obs-studio/plugins/obs-osc -Force | Out-Null
-          robocopy . obs-studio/plugins/obs-osc /E /XD .git .github /NFL /NDL /NJH /NJS
+          # Exclude the clone itself, or robocopy nests obs-studio into
+          # its own plugins/obs-osc until paths overflow.
+          robocopy . obs-studio/plugins/obs-osc /E /XD .git .github obs-studio /NFL /NDL /NJH /NJS
           if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
           Add-Content -Path obs-studio/plugins/CMakeLists.txt -Value ''

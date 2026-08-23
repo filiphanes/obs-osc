@@ -22,6 +22,8 @@ target_sources(
           src/osc-server.h
           src/osc-plugin.h
           src/osc-controls.cpp
+          src/osc-objects.cpp
+          src/osc-objects.h
           src/osc-feedback.cpp
           src/osc-subscribe.cpp
           src/osc-subscribe.h

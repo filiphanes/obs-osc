@@ -128,12 +128,9 @@ struct source_ctx {
 	obs_data_t *media;
 };
 
-static bool source_enum_cb(void *param, obs_source_t *source)
+static bool source_enum_visit(obs_source_t *source, void *param)
 {
-	struct source_ctx *ctx = (struct source_ctx *)param;
-
-	if (!osc_is_input(source))
-		return true;
+	auto *ctx = (struct source_ctx *)param;
 
 	const char *name = obs_source_get_name(source);
 
@@ -228,7 +225,7 @@ static void schema_filter_cb(obs_source_t *parent, obs_source_t *filter, void *p
 		  make_rw_int(obs_source_enabled(filter) ? 1 : 0, 0, 1));
 }
 
-static bool schema_filter_source_cb(void *param, obs_source_t *source)
+static bool schema_filter_source_visit(obs_source_t *source, void *param)
 {
 	if (obs_source_filter_count(source) == 0)
 		return true;
@@ -244,12 +241,9 @@ struct tally_roots {
 	obs_data_t *showing;
 };
 
-static bool schema_tally_cb(void *param, obs_source_t *source)
+static bool schema_tally_visit(obs_source_t *source, void *param)
 {
 	auto *roots = (struct tally_roots *)param;
-
-	if (!osc_is_input(source))
-		return true;
 
 	const char *name = obs_source_get_name(source);
 	add_child(roots->active, name, make_ro_int(obs_source_active(source) ? 1 : 0, "In program chain"));
@@ -318,7 +312,7 @@ static obs_data_t *build_tree(void)
 	obs_data_t *volume = make_container("Volume faders, 0..1");
 	obs_data_t *media = make_container("Media source transport");
 	struct source_ctx ctx = {mute, volume, media};
-	obs_enum_sources(source_enum_cb, &ctx);
+	osc_visit_sources("*", osc_source_kind::input, source_enum_visit, &ctx);
 	map_set(obs_contents, osc_addr::mute, mute);
 	map_set(obs_contents, osc_addr::volume, volume);
 	map_set(obs_contents, osc_addr::media, media);
@@ -335,14 +329,14 @@ static obs_data_t *build_tree(void)
 
 	/* Filters of every source that carries any */
 	obs_data_t *filters = make_container("Filter enable toggles");
-	obs_enum_sources(schema_filter_source_cb, filters);
+	osc_visit_sources("*", osc_source_kind::any, schema_filter_source_visit, filters);
 	map_set(obs_contents, osc_addr::leaf(osc_addr::filter), filters);
 
 	/* Tally state of inputs */
 	obs_data_t *active = make_container("Inputs rendered in the program chain");
 	obs_data_t *showing = make_container("Inputs shown on screen at all");
 	struct tally_roots tally = {active, showing};
-	obs_enum_sources(schema_tally_cb, &tally);
+	osc_visit_sources("*", osc_source_kind::input, schema_tally_visit, &tally);
 	map_set(obs_contents, osc_addr::leaf(osc_addr::active), active);
 	map_set(obs_contents, osc_addr::leaf(osc_addr::showing), showing);
 

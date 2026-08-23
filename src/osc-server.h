@@ -15,10 +15,14 @@
  * header pulls in no system headers.
  */
 
+#include "osc-message.h"
+#include "osc-net.h"
+
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <thread>
@@ -55,6 +59,11 @@ public:
 	/* Sends one datagram to an explicit endpoint, e.g. answering a
 	 * poll request or delivering a subscription match. */
 	void send_to(const uint8_t *data, size_t size, const osc_net::osc_endpoint &target);
+
+	/* Builds one OSC message and delivers it to an explicit endpoint;
+	 * the canonical poll-reply path. Arguments mirror feedback. */
+	void reply(const osc_net::osc_endpoint &to, const char *address,
+		   std::initializer_list<osc_argument> args = {});
 
 private:
 	void recv_loop();

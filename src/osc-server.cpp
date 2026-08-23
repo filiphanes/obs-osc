@@ -1,5 +1,6 @@
 #include "osc-server.h"
 
+#include "osc-message.h"
 #include "osc-net.h"
 
 #include <util/base.h>
@@ -172,4 +173,12 @@ void osc_server::recv_loop()
 			handler_(buf.data(), (size_t)n, sender);
 		}
 	}
+}
+
+void osc_server::reply(const osc_net::osc_endpoint &to, const char *address,
+		       std::initializer_list<osc_argument> args)
+{
+	std::vector<uint8_t> buf;
+	osc_build_message(&buf, address, args);
+	send_to(buf.data(), buf.size(), to);
 }

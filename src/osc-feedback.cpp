@@ -428,11 +428,18 @@ static void change_hook_connections(obs_source_t *source, bool connect)
 {
 	if (osc_is_input(source)) {
 		connect_hook_table(source, input_hooks, OSC_HOOK_COUNT(input_hooks), connect);
-		hook_existing_filters(source);
 	} else if (osc_is_scene(source)) {
 		connect_hook_table(source, scene_hooks, OSC_HOOK_COUNT(scene_hooks), connect);
-		hook_existing_filters(source);
+	} else {
+		return;
 	}
+
+	/* Filter enable-hooks follow the parent's hooks: symmetric by
+	 * construction, so no caller can forget half of the pair. */
+	if (connect)
+		hook_existing_filters(source);
+	else
+		unhook_filters_of_parent(source);
 }
 
 static bool enum_connect_cb(void *param, obs_source_t *source)
@@ -447,7 +454,6 @@ static bool enum_disconnect_cb(void *param, obs_source_t *source)
 {
 	UNUSED_PARAMETER(param);
 
-	unhook_filters_of_parent(source);
 	change_hook_connections(source, false);
 	return true;
 }
@@ -471,7 +477,7 @@ static void source_destroy_cb(void *param, calldata_t *cd)
 	if (!calldata_get_ptr(cd, "source", &source))
 		return;
 
-	unhook_filters_of_parent(source);
+	/* Also drops the filter enable-hooks of this source. */
 	change_hook_connections(source, false);
 }
 
