@@ -17,6 +17,15 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+/* POSIX ssize_t does not exist on Windows and Winsock calls return int;
+ * alias a standard signed type so POSIX-style call sites compile
+ * unchanged. Guard mirrors MinGW's convention in case another header
+ * already provided it. */
+#ifndef _SSIZE_T_DEFINED
+#define _SSIZE_T_DEFINED
+using ssize_t = long long;
+#endif
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
