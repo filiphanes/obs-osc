@@ -174,10 +174,13 @@ jobs:
       - name: Configure ⚙️
         run: |
           : Configure ⚙️
+          # Skip Intel QSV encoder; it would require libvpl-dev and is
+          # unrelated to this plugin.
           cmake -S obs-studio --preset ubuntu-ci \
             -DENABLE_BROWSER=OFF \
             -DENABLE_SCRIPTING=OFF \
             -DENABLE_WEBSOCKET=OFF \
+            -DENABLE_QSV11=OFF \
             -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
 
       - name: Build obs-osc 🧱
