@@ -5,7 +5,7 @@
  * unsolicited feedback:
  *
  *  - UDP topic subscriptions: a controller registers glob patterns via
- *    /obs/subscribe; matching messages are delivered to its endpoint
+ *    /subscribe; matching messages are delivered to its endpoint
  *    as ordinary OSC datagrams.
  *  - OSCQuery LISTEN: websocket peers pin exact addresses; matching
  *    messages are streamed to them as binary websocket frames.
@@ -53,7 +53,7 @@ void osc_listen_remove(void *peer, const std::string &path);
 /* Drops every registration of a peer (websocket disconnect). */
 void osc_listen_remove_peer(void *peer);
 
-/* Executes /obs/subscribe and /obs/unsubscribe messages. Runs on the
+/* Executes /subscribe and /unsubscribe messages. Runs on the
  * UI thread like every other dispatched command. */
 void osc_handle_subscription(const osc_message &msg, const osc_net::osc_endpoint &who,
 			     bool unsubscribe);

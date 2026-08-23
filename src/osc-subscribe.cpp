@@ -228,7 +228,7 @@ void osc_handle_subscription(const osc_message &msg, const osc_net::osc_endpoint
 
 	/* subscribe: ,s <pattern> [,i port] */
 	if (msg.args.empty() || msg.args[0].type != 's' || msg.args[0].s.empty()) {
-		blog(LOG_WARNING, "[obs-osc] /obs/subscribe needs a string topic pattern");
+		blog(LOG_WARNING, "[obs-osc] /subscribe needs a string topic pattern");
 		return;
 	}
 

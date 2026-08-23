@@ -222,3 +222,12 @@ float osc_message::arg_float(size_t index, float def) const
 		return (float)a.i;
 	return def;
 }
+
+std::string osc_message::arg_string(size_t index, const char *def) const
+{
+	if (index >= args.size())
+		return def;
+
+	const osc_argument &a = args[index];
+	return a.type == 's' ? a.s : std::string(def);
+}

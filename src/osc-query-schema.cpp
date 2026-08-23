@@ -169,6 +169,102 @@ static void add_name_list(obs_data_t *parent, char **names)
 		add_child(parent, names[i], make_bang());
 }
 
+/* ---- Scene items, filters, tally and hotkeys ----------------------- */
+
+struct scene_item_roots {
+	obs_data_t *visible;
+	obs_data_t *locked;
+	obs_data_t *order;
+};
+
+/* Per-scene walk state; scene_name is bound by the scene callback. */
+struct scene_walk_ctx {
+	scene_item_roots parents;
+	const char *scene_name;
+};
+
+static bool schema_item_cb(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
+{
+	UNUSED_PARAMETER(scene);
+	auto *ctx = (struct scene_walk_ctx *)param;
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return true;
+
+	const char *name = obs_source_get_name(source);
+
+	add_child(ctx->parents.visible, name, make_rw_int(obs_sceneitem_visible(item) ? 1 : 0, 0, 1));
+	add_child(ctx->parents.locked, name, make_rw_int(obs_sceneitem_locked(item) ? 1 : 0, 0, 1));
+	add_child(ctx->parents.order, name,
+		  make_rw_int(obs_sceneitem_get_order_position(item), 0, 4095, "0 = bottom"));
+	return true;
+}
+
+static bool schema_scene_cb(void *param, obs_source_t *scene)
+{
+	auto *roots = (struct scene_item_roots *)param;
+
+	const char *scene_name = obs_source_get_name(scene);
+
+	obs_data_t *visible = make_container();
+	obs_data_t *locked = make_container();
+	obs_data_t *order = make_container();
+
+	struct scene_walk_ctx ctx = {{visible, locked, order}, scene_name};
+	obs_scene_enum_items(obs_scene_from_source(scene), schema_item_cb, &ctx);
+
+	add_child(roots->visible, scene_name, visible);
+	add_child(roots->locked, scene_name, locked);
+	add_child(roots->order, scene_name, order);
+	return true;
+}
+
+static void schema_filter_cb(obs_source_t *parent, obs_source_t *filter, void *param)
+{
+	UNUSED_PARAMETER(parent);
+
+	add_child((obs_data_t *)param, obs_source_get_name(filter),
+		  make_rw_int(obs_source_enabled(filter) ? 1 : 0, 0, 1));
+}
+
+static bool schema_filter_source_cb(void *param, obs_source_t *source)
+{
+	if (obs_source_filter_count(source) == 0)
+		return true;
+
+	obs_data_t *node = make_container();
+	obs_source_enum_filters(source, schema_filter_cb, node);
+	add_child((obs_data_t *)param, obs_source_get_name(source), node);
+	return true;
+}
+
+struct tally_roots {
+	obs_data_t *active;
+	obs_data_t *showing;
+};
+
+static bool schema_tally_cb(void *param, obs_source_t *source)
+{
+	auto *roots = (struct tally_roots *)param;
+
+	if (!osc_is_input(source))
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	add_child(roots->active, name, make_ro_int(obs_source_active(source) ? 1 : 0, "In program chain"));
+	add_child(roots->showing, name, make_ro_int(obs_source_showing(source) ? 1 : 0, "On screen"));
+	return true;
+}
+
+static bool schema_hotkey_cb(void *data, obs_hotkey_id id, obs_hotkey_t *key)
+{
+	UNUSED_PARAMETER(id);
+
+	add_child((obs_data_t *)data, obs_hotkey_get_name(key), make_bang());
+	return true;
+}
+
 static void add_output_containers(obs_data_t *obs_contents)
 {
 	for (size_t i = 0; i < osc_addr::output_count; i++) {
@@ -190,12 +286,8 @@ static void add_output_containers(obs_data_t *obs_contents)
 static obs_data_t *build_tree(void)
 {
 	obs_data_t *root = obs_data_create();
-	obs_data_t *root_contents = obs_data_create();
-	obs_data_set_obj(root, contents_key, root_contents);
-	obs_data_release(root_contents);
-
-	obs_data_t *obs_node = make_container("OSC remote control");
-	obs_data_t *obs_contents = obs_data_get_obj(obs_node, contents_key);
+	obs_data_t *obs_contents = obs_data_create();
+	obs_data_set_obj(root, contents_key, obs_contents);
 
 	/* Scenes */
 	obs_data_t *program = make_container("Switch program scene");
@@ -231,6 +323,34 @@ static obs_data_t *build_tree(void)
 	map_set(obs_contents, osc_addr::volume, volume);
 	map_set(obs_contents, osc_addr::media, media);
 
+	/* Scene items of every scene: visibility, lock, stacking order */
+	obs_data_t *visible = make_container("Scene item visibility");
+	obs_data_t *locked = make_container("Scene item lock");
+	obs_data_t *order = make_container("Scene item stacking order");
+	struct scene_item_roots item_roots = {visible, locked, order};
+	obs_enum_scenes(schema_scene_cb, &item_roots);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::visible), visible);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::locked), locked);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::order), order);
+
+	/* Filters of every source that carries any */
+	obs_data_t *filters = make_container("Filter enable toggles");
+	obs_enum_sources(schema_filter_source_cb, filters);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::filter), filters);
+
+	/* Tally state of inputs */
+	obs_data_t *active = make_container("Inputs rendered in the program chain");
+	obs_data_t *showing = make_container("Inputs shown on screen at all");
+	struct tally_roots tally = {active, showing};
+	obs_enum_sources(schema_tally_cb, &tally);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::active), active);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::showing), showing);
+
+	/* Hotkeys registered anywhere in OBS, triggered by exact name */
+	obs_data_t *hotkeys = make_container("Trigger hotkey by OBS name");
+	obs_enum_hotkeys(schema_hotkey_cb, hotkeys);
+	map_set(obs_contents, osc_addr::leaf(osc_addr::hotkey_prefix), hotkeys);
+
 	/* Profiles and scene collections. The frontend returns a single
 	 * contiguous allocation (pointer array + string data): one bfree. */
 	obs_data_t *profile = make_container("Switch profile");
@@ -253,9 +373,8 @@ static obs_data_t *build_tree(void)
 	map_set(obs_contents, osc_addr::leaf(osc_addr::unsubscribe),
 		make_bang("Unsubscribe: ,s <pattern>, or no argument for everything"));
 
-	map_set(root_contents, osc_addr::leaf("/obs"), obs_node);
-	/* obs_node ownership went to root_contents via map_set; only the
-	 * borrowed obs_contents reference needs releasing here. */
+	/* The plugin namespace starts at the OSC root, so the tree's
+	 * CONTENTS live directly on the root node. */
 	obs_data_release(obs_contents);
 
 	return root;
@@ -269,13 +388,16 @@ static std::string walk_tree(const std::string &path)
 	obs_data_t *root = build_tree();
 	obs_data_t *node = root;
 
-	/* Descend through each node's CONTENTS per path segment. */
+	/* Descend through each node's CONTENTS per path segment. "/"
+	 * serves the root itself, which now carries the whole tree. */
+	bool matched = false;
 	size_t start = 0;
 	while (node && start <= path.size()) {
 		size_t slash = path.find('/', start);
 		std::string segment = slash == std::string::npos ? path.substr(start)
 								 : path.substr(start, slash - start);
 		if (!segment.empty()) {
+			matched = true;
 			obs_data_t *contents = obs_data_get_obj(node, contents_key);
 			obs_data_t *child =
 				contents ? obs_data_get_obj(contents, segment.c_str()) : nullptr;
@@ -287,8 +409,8 @@ static std::string walk_tree(const std::string &path)
 			break;
 		start = slash + 1;
 	}
-	if (node == root)
-		node = nullptr; /* no segments matched */
+	if (matched && node == root)
+		node = nullptr; /* segments existed but none matched */
 
 	if (node) {
 		/* Serializes into an internal cache owned by node; we copy it. */

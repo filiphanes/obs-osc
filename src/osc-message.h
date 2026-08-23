@@ -32,6 +32,7 @@ struct osc_message {
 	bool arg_bool(size_t index, bool def) const;
 	int32_t arg_int(size_t index, int32_t def) const;
 	float arg_float(size_t index, float def) const;
+	std::string arg_string(size_t index, const char *def) const;
 };
 
 inline osc_argument osc_int(int32_t v)

@@ -2,10 +2,12 @@
 
 /*
  * Small helpers shared across modules: input-source classification,
- * glob matching for mute patterns, frontend transition iteration and
- * the perceptual fader <-> multiplier volume mapping.
+ * glob matching for mute patterns, frontend transition iteration,
+ * the perceptual fader <-> multiplier volume mapping, and the scalar
+ * scene-item transform field table.
  */
 
+#include <cstddef>
 #include <obs.h>
 
 /* True for input sources - the only kind this plugin controls. */
@@ -29,3 +31,17 @@ void osc_enum_transitions(void (*cb)(obs_source_t *transition, void *param), voi
  * volume multiplier (clamped to [0, 16]). */
 float osc_volume_position(float multiplier);
 float osc_volume_multiplier(float position);
+
+/* One entry per scalar scene-item transform property, addressable as
+ * "/transform/<scene>/<item>/<field>". Shared by the control plane
+ * (lookup by field name) and the feedback plane (reporting every
+ * field after a transform change). */
+struct osc_transform_field {
+	const char *name;
+	float (*get)(const obs_sceneitem_t *item);
+	void (*set)(obs_sceneitem_t *item, float value);
+};
+
+inline constexpr size_t osc_transform_field_count = 9;
+
+extern const struct osc_transform_field osc_transform_fields[osc_transform_field_count];

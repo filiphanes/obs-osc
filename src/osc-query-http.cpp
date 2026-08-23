@@ -144,7 +144,7 @@ static void handle_client(osc_net::socket_t fd)
 		if (query != std::string::npos)
 			path.erase(query);
 
-		const std::string decoded = path == "/" ? "/obs" : url_decode(path);
+		const std::string decoded = path == "/" ? "/" : url_decode(path);
 		const std::string body = http_handler(decoded);
 		if (body.empty())
 			respond(fd, not_found_json, false);
